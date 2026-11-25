@@ -1,0 +1,58 @@
+---
+- name: Preparar servidores do Smart Construction
+  hosts: app_servers
+  become: false
+
+  tasks:
+    - name: Confirmar que o servidor é Linux
+      ansible.builtin.assert:
+        that:
+          - ansible_facts["system"] == "Linux"
+        fail_msg: "Este playbook espera um servidor Linux."
+
+    - name: Confirmar que o Docker Compose está disponível
+      ansible.builtin.command:
+        cmd: docker compose version
+      changed_when: false
+
+    - name: Verificar se o arquivo .env existe
+      ansible.builtin.stat:
+        path: "{{ app_directory }}/.env"
+      register: env_file
+
+    - name: Verificar se a pasta .secrets existe
+      ansible.builtin.stat:
+        path: "{{ app_directory }}/.secrets"
+      register: secrets_dir
+
+    - name: Preparar configuração e credenciais, se necessário
+      ansible.builtin.command:
+        cmd: sh scripts/setup.sh
+        chdir: "{{ app_directory }}"
+      when: >
+        not env_file.stat.exists or
+        not (secrets_dir.stat.isdir | default(false))
+      no_log: true
+
+    - name: Validar a configuração do Compose
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - -f
+          - "{{ app_compose_file }}"
+          - config
+          - --quiet
+        chdir: "{{ app_directory }}"
+      changed_when: false
+
+    - name: Iniciar os serviços do Smart Construction
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_directory }}"
+        files:
+          - "{{ app_compose_file }}"
+        state: present
+        build: "{{ compose_build | default('never') }}"
+        pull: "{{ 'always' if update_application_images | default(false) | bool else 'policy' }}"
+        wait: true
+        wait_timeout: 300

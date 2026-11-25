@@ -1,0 +1,440 @@
+---
+- name: Instalar Docker e preparar discos persistentes nas VMs
+  hosts: app_servers:db_servers
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Confirmar sistema operacional Ubuntu
+      ansible.builtin.assert:
+        that:
+          - ansible_facts["distribution"] == "Ubuntu"
+        fail_msg: "As VMs de produção deste projeto usam Ubuntu."
+
+    - name: Atualizar cache de pacotes
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Aplicar atualização de sistema quando solicitada
+      ansible.builtin.apt:
+        upgrade: dist
+        autoremove: true
+      when: update_operating_system | bool
+
+    - name: Conferir se o sistema solicitou reinicialização
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reiniciar host após atualização, se necessário
+      ansible.builtin.reboot:
+        reboot_timeout: 900
+      when:
+        - update_operating_system | bool
+        - reboot_required.stat.exists
+
+    - name: Instalar Docker, Compose e utilitários
+      ansible.builtin.apt:
+        name: "{{ base_packages + docker_packages + extra_packages + host_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Confirmar que o disco de dados do Terraform está conectado
+      ansible.builtin.stat:
+        path: "{{ data_disk_device }}"
+      register: data_disk
+
+    - name: Parar se o disco esperado não estiver anexado
+      ansible.builtin.assert:
+        that:
+          - data_disk.stat.exists
+        fail_msg: "Disco {{ data_disk_device }} não encontrado; confira o attachment no Terraform."
+
+    - name: Inspecionar assinaturas do disco sem modificá-lo
+      ansible.builtin.command:
+        argv:
+          - wipefs
+          - --noheadings
+          - --output
+          - TYPE
+          - "{{ data_disk_device }}"
+      register: disk_signatures
+      changed_when: false
+
+    - name: Recusar disco com formato inesperado para proteger dados
+      ansible.builtin.assert:
+        that:
+          - disk_signatures.stdout | trim in ["", "ext4"]
+        fail_msg: >-
+          {{ data_disk_device }} contém assinatura diferente de ext4.
+          O playbook parou sem formatar o disco para preservar os dados.
+
+    - name: Formatar disco novo como ext4
+      community.general.filesystem:
+        fstype: ext4
+        dev: "{{ data_disk_device }}"
+      when: disk_signatures.stdout | trim == ""
+
+    - name: Criar ponto de montagem persistente
+      ansible.builtin.file:
+        path: "{{ data_mountpoint }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Montar disco no boot
+      ansible.posix.mount:
+        path: "{{ data_mountpoint }}"
+        src: "{{ data_disk_device }}"
+        fstype: ext4
+        opts: defaults,noatime
+        state: mounted
+
+    - name: Criar raiz persistente de dados do Docker
+      ansible.builtin.file:
+        path: "{{ docker_data_root }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0711"
+
+    - name: Criar diretório de configuração systemd do Docker
+      ansible.builtin.file:
+        path: /etc/systemd/system/docker.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Fazer Docker aguardar o disco persistente em cada boot
+      ansible.builtin.template:
+        src: templates/docker-mount-dependency.conf.j2
+        dest: /etc/systemd/system/docker.service.d/data-disk.conf
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reiniciar Docker
+
+    - name: Configurar Docker para guardar volumes e imagens no disco persistente
+      ansible.builtin.template:
+        src: templates/docker-daemon.json.j2
+        dest: /etc/docker/daemon.json
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Reiniciar Docker
+
+    - name: Habilitar e iniciar Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Adicionar usuário Ansible ao grupo Docker
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: true
+
+  handlers:
+    - name: Reiniciar Docker
+      ansible.builtin.systemd:
+        name: docker
+        state: restarted
+        daemon_reload: true
+
+- name: Preparar credenciais e configuração da aplicação
+  hosts: app_servers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Baixar o repositório para a VM de aplicação
+      ansible.builtin.git:
+        repo: "{{ app_repository }}"
+        dest: "{{ app_directory }}"
+        version: "{{ app_repository_version }}"
+        update: true
+
+    - name: Verificar se as credenciais já existem
+      ansible.builtin.stat:
+        path: "{{ app_directory }}/.secrets/backend/s3-identities.json"
+      register: production_secrets
+
+    - name: Gerar credenciais ausentes sem exibi-las
+      ansible.builtin.command:
+        cmd: sh scripts/setup.sh
+        chdir: "{{ app_directory }}"
+      when: not production_secrets.stat.exists
+      no_log: true
+
+    - name: Validar domínio HTTPS e tag já publicada
+      ansible.builtin.assert:
+        that:
+          - app_public_origin is defined
+          - app_public_origin is match('^https://[^/]+$')
+          - app_domain is defined
+          - app_domain != 'SEU_DOMINIO'
+          - letsencrypt_email is defined
+          - letsencrypt_email != 'SEU_EMAIL'
+          - app_image_tag is defined
+          - app_image_tag | length > 0
+        fail_msg: >-
+          Defina app_domain, letsencrypt_email e app_image_tag (já publicada no
+          Artifact Registry) em group_vars/app_servers.yml.
+
+    - name: Criar raiz do desafio ACME
+      ansible.builtin.file:
+        path: /var/www/certbot
+        state: directory
+        owner: www-data
+        group: www-data
+        mode: "0755"
+
+    - name: Desativar site Nginx padrão
+      ansible.builtin.file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Verificar certificado HTTPS existente
+      ansible.builtin.stat:
+        path: "/etc/letsencrypt/live/{{ app_domain }}/fullchain.pem"
+      register: tls_certificate
+
+    - name: Configurar Nginx temporário para o desafio ACME inicial
+      ansible.builtin.template:
+        src: templates/nginx-http-bootstrap.conf.j2
+        dest: /etc/nginx/sites-available/smart-construction
+        owner: root
+        group: root
+        mode: "0644"
+      when: not tls_certificate.stat.exists
+
+    - name: Habilitar o site Nginx do Smart Construction
+      ansible.builtin.file:
+        src: /etc/nginx/sites-available/smart-construction
+        dest: /etc/nginx/sites-enabled/smart-construction
+        state: link
+        owner: root
+        group: root
+
+    - name: Verificar sintaxe da configuração HTTP inicial
+      ansible.builtin.command:
+        cmd: nginx -t
+      changed_when: false
+      when: not tls_certificate.stat.exists
+
+    - name: Iniciar Nginx do host para receber o desafio ACME
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: true
+
+    - name: Emitir certificado TLS para o domínio
+      ansible.builtin.command:
+        argv:
+          - certbot
+          - certonly
+          - --webroot
+          - --webroot-path
+          - /var/www/certbot
+          - --domain
+          - "{{ app_domain }}"
+          - --email
+          - "{{ letsencrypt_email }}"
+          - --agree-tos
+          - --non-interactive
+          - --keep-until-expiring
+      when: not tls_certificate.stat.exists
+      no_log: true
+
+    - name: Criar diretório de hooks de renovação do Certbot
+      ansible.builtin.file:
+        path: /etc/letsencrypt/renewal-hooks/deploy
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Recarregar Nginx quando Certbot renovar o certificado
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/reload-nginx
+        content: "#!/bin/sh\nsystemctl reload nginx\n"
+        owner: root
+        group: root
+        mode: "0750"
+
+    - name: Configurar Nginx HTTPS para a aplicação
+      ansible.builtin.template:
+        src: templates/nginx-https.conf.j2
+        dest: /etc/nginx/sites-available/smart-construction
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Validar configuração final do Nginx
+      ansible.builtin.command:
+        cmd: nginx -t
+      changed_when: false
+
+    - name: Habilitar renovação automática dos certificados
+      ansible.builtin.service:
+        name: certbot.timer
+        state: started
+        enabled: true
+
+    - name: Recarregar Nginx com HTTPS
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+        enabled: true
+
+    - name: Criar ambiente de produção do Compose
+      ansible.builtin.template:
+        src: templates/app.env.j2
+        dest: "{{ app_directory }}/.env"
+        owner: root
+        group: root
+        mode: "0600"
+
+- name: Preparar e iniciar PostgreSQL na VM exclusiva
+  hosts: db_servers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Baixar o repositório para a VM de banco
+      ansible.builtin.git:
+        repo: "{{ app_repository }}"
+        dest: "{{ app_directory }}"
+        version: "{{ app_repository_version }}"
+        update: true
+
+    - name: Criar diretório protegido para segredos compartilhados
+      ansible.builtin.file:
+        path: "{{ app_directory }}/.secrets/backend"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Ler senha de migração na VM de aplicação
+      ansible.builtin.slurp:
+        src: "{{ hostvars[groups['app_servers'][0]].app_directory }}/.secrets/backend/migration-password"
+      delegate_to: "{{ groups['app_servers'][0] }}"
+      register: shared_migration_password
+      no_log: true
+
+    - name: Gravar senha de migração na VM de banco
+      ansible.builtin.copy:
+        content: "{{ shared_migration_password.content | b64decode }}"
+        dest: "{{ app_directory }}/.secrets/backend/migration-password"
+        owner: root
+        group: root
+        mode: "0444"
+      no_log: true
+
+    - name: Ler senha da API na VM de aplicação
+      ansible.builtin.slurp:
+        src: "{{ hostvars[groups['app_servers'][0]].app_directory }}/.secrets/backend/api-password"
+      delegate_to: "{{ groups['app_servers'][0] }}"
+      register: shared_api_password
+      no_log: true
+
+    - name: Gravar senha da API na VM de banco
+      ansible.builtin.copy:
+        content: "{{ shared_api_password.content | b64decode }}"
+        dest: "{{ app_directory }}/.secrets/backend/api-password"
+        owner: root
+        group: root
+        mode: "0444"
+      no_log: true
+
+    - name: Configurar Compose do PostgreSQL
+      ansible.builtin.template:
+        src: templates/db.env.j2
+        dest: "{{ app_directory }}/.env"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Validar Compose do banco
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - -f
+          - "{{ db_compose_file }}"
+          - config
+          - --quiet
+        chdir: "{{ app_directory }}"
+      changed_when: false
+
+    - name: Iniciar PostgreSQL e aguardar ficar saudável
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_directory }}"
+        files:
+          - "{{ db_compose_file }}"
+        state: present
+        build: never
+        pull: "{{ 'always' if update_database_image | bool else 'missing' }}"
+        wait: true
+        wait_timeout: 300
+
+- name: Autenticar no registry e iniciar os serviços da aplicação
+  hosts: app_servers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Verificar configuração de autenticação do Docker
+      ansible.builtin.stat:
+        path: /root/.docker/config.json
+      register: docker_auth_config
+
+    - name: Obter token temporário da conta de serviço da VM
+      ansible.builtin.uri:
+        url: http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token
+        headers:
+          Metadata-Flavor: Google
+        return_content: true
+        status_code: 200
+      register: registry_token
+      when: update_application_images | bool or not docker_auth_config.stat.exists
+      no_log: true
+
+    - name: Entrar no Artifact Registry sem senha permanente
+      community.docker.docker_login:
+        registry_url: "https://{{ artifact_registry_host }}"
+        username: oauth2accesstoken
+        password: "{{ registry_token.json.access_token }}"
+        config_path: /root/.docker/config.json
+        reauthorize: true
+      when: update_application_images | bool or not docker_auth_config.stat.exists
+      no_log: true
+
+    - name: Validar Compose da aplicação
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - -f
+          - "{{ app_compose_file }}"
+          - config
+          - --quiet
+        chdir: "{{ app_directory }}"
+      changed_when: false
+
+    - name: Iniciar serviços e aguardar saúde
+      community.docker.docker_compose_v2:
+        project_src: "{{ app_directory }}"
+        files:
+          - "{{ app_compose_file }}"
+        state: present
+        build: never
+        pull: "{{ 'always' if update_application_images | bool else 'missing' }}"
+        wait: true
+        wait_timeout: 300

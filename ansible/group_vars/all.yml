@@ -1,0 +1,25 @@
+---
+deployment_environment: gcp
+gcp_project_id: projeto-mensal-515620
+gcp_zone: us-central1-a
+ansible_user: fabio
+ansible_ssh_private_key_file: /home/fabio/.ssh/id_ed25519
+ansible_ssh_common_args: >-
+  -o ProxyCommand="gcloud compute start-iap-tunnel %h %p --listen-on-stdin
+  --project=projeto-mensal-515620 --zone=us-central1-a"
+
+update_operating_system: false
+extra_packages: []
+base_packages:
+  - ca-certificates
+  - curl
+  - git
+  - util-linux
+host_packages: []
+docker_packages:
+  - docker.io
+  - docker-compose-v2
+  - python3-docker
+
+data_mountpoint: /srv/smart-construction-data
+docker_data_root: /srv/smart-construction-data/docker

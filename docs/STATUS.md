@@ -97,3 +97,11 @@ O CI não foi executado no GitHub. O fluxo persistente completo de cadastro/empr
 Próximo passo: carregar manualmente as 25 profissões e validar cadastro, imagem, aprovação, publicação e persistência após reinício. A conta administrativa local já foi criada manualmente, conforme registrado acima; nenhuma profissão foi carregada nesta execução.
 
 Nenhum banco, administrador ou dado privado foi copiado. Sem push, publicação ou implantação em nuvem. O cenário de infraestrutura de duas VMs é uma tarefa a ser desenvolvida pelos alunos, não uma configuração já entregue.
+
+## Infraestrutura GCP — 25/11/2026
+
+Criada a base Terraform para VPC/subnet em `us-central1`, duas VMs Ubuntu, regras de firewall, IPs privados, IP público estático para a aplicação, discos persistentes, Artifact Registry e acesso administrativo via IAP. O usuário inicializou o backend remoto GCS. Depois disso, mudanças de IAP, IP estático e regras HTTP/HTTPS tornaram o `tfplan` gerado anteriormente desatualizado; ele ainda não foi aplicado.
+
+Criado `ansible/site.yml` para instalar Docker/Compose, controlar atualização do Ubuntu e das imagens, montar discos após inspeção segura, manter dados do Docker nos discos e iniciar primeiro PostgreSQL e depois a aplicação. Credenciais são geradas no host de aplicação; somente as duas senhas do PostgreSQL são copiadas ao host do banco, com tarefas ocultas no log. Incluída configuração de Nginx/Certbot para HTTPS e renovação automática.
+
+Executado `terraform fmt`. Não executados `terraform validate`, novo `terraform plan`, `terraform apply`, validação de sintaxe/conectividade Ansible nem implantação em nuvem. Antes de provisionar: definir domínio e e-mail do Certbot, apontar DNS ao IP estático, publicar as imagens web/api no Artifact Registry, instalar as collections Ansible e gerar/revisar um plano Terraform novo. A publicação automática de imagens pelo CI permanece pendente.

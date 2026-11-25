@@ -1,0 +1,10 @@
+all:
+  children:
+    app_servers:
+      hosts:
+        local:
+          ansible_connection: local
+          app_directory: /mnt/c/users/fabio/onedrive/documentos/smart-construction-DedSec
+          app_compose_file: compose.yaml
+          compose_build: policy
+          update_application_images: false
