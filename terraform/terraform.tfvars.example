@@ -1,0 +1,7 @@
+project_id     = "SEU_ID_DE_PROJETO_GCP"
+ssh_user       = "fabio"
+ssh_public_key = "COLE_AQUI_O_CONTEUDO_DA_CHAVE_PUBLICA"
+
+# Opcional: ajuste estes valores se sua cota/orçamento exigir.
+# app_machine_type = "e2-standard-2"
+# db_machine_type  = "e2-medium"
