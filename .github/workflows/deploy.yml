@@ -128,14 +128,13 @@ jobs:
       - name: Validar segredos obrigatórios do GCP e SSH
         shell: bash
         env:
-          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
           SSH_PUBLIC_KEY: ${{ secrets.TF_VAR_ssh_public_key }}
           IAP_USER_EMAIL: ${{ secrets.TF_VAR_iap_tunnel_user_email }}
         run: |
           set -euo pipefail
-          for var in GCP_SA_KEY GCP_PROJECT_ID TF_STATE_BUCKET SSH_PUBLIC_KEY IAP_USER_EMAIL; do
+          for var in GCP_PROJECT_ID TF_STATE_BUCKET SSH_PUBLIC_KEY IAP_USER_EMAIL; do
             if [ -z "${!var:-}" ]; then
               echo "::error::Secret obrigatório $var não configurado no repositório."
               exit 1
@@ -145,7 +144,8 @@ jobs:
       - name: Autenticar no Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/579786014815/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: smart-construction-sa@projeto-mensal-515620.iam.gserviceaccount.com
 
       - name: Configurar Terraform
         uses: hashicorp/setup-terraform@v3
@@ -219,7 +219,8 @@ jobs:
       - name: Autenticar no Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/579786014815/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: smart-construction-sa@projeto-mensal-515620.iam.gserviceaccount.com
 
       - name: Configurar gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
@@ -261,7 +262,8 @@ jobs:
       - name: Autenticar no Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/579786014815/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: smart-construction-sa@projeto-mensal-515620.iam.gserviceaccount.com
 
       - name: Configurar gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
@@ -402,7 +404,8 @@ jobs:
       - name: Autenticar no Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/579786014815/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: smart-construction-sa@projeto-mensal-515620.iam.gserviceaccount.com
 
       - name: Configurar gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
@@ -481,7 +484,8 @@ jobs:
       - name: Autenticar no Google Cloud
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: projects/579786014815/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: smart-construction-sa@projeto-mensal-515620.iam.gserviceaccount.com
 
       - name: Configurar gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
