@@ -307,6 +307,8 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          # Ad-hoc 'ansible' nao carrega ansible/group_vars; expor ao lado do inventario (raiz)
+          ln -sfn ansible/group_vars group_vars
 
           cat <<EOF > .ansible-hosts.yml
           all:
@@ -445,6 +447,8 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
+          # Ad-hoc 'ansible' nao carrega ansible/group_vars; expor ao lado do inventario (raiz)
+          ln -sfn ansible/group_vars group_vars
 
           cat <<EOF > .ansible-hosts.yml
           all:
