@@ -388,9 +388,19 @@ jobs:
           APP_PUBLIC_IP: ${{ needs.terraform.outputs.app_public_ip }}
         run: |
           set -euo pipefail
-          echo "Testando HTTPS em https://${APP_DOMAIN}/healthz ..."
-          curl -fsS -k --max-time 15 "https://${APP_DOMAIN}/healthz"
+          echo "Testando HTTPS direto no IP ${APP_PUBLIC_IP} (SNI ${APP_DOMAIN}) ..."
+          ok=0
+          for i in $(seq 1 12); do
+            if curl -fsS -k --max-time 15 --resolve "${APP_DOMAIN}:443:${APP_PUBLIC_IP}" "https://${APP_DOMAIN}/healthz"; then ok=1; break; fi
+            echo "Aguardando aplicacao (tentativa $i/12)..."; sleep 10
+          done
+          [ "$ok" = "1" ] || { echo "::error::Aplicacao nao respondeu em https://${APP_DOMAIN}/healthz via IP"; exit 1; }
           echo ""
+          if getent hosts "${APP_DOMAIN}" >/dev/null; then
+            echo "DNS resolve para: $(getent hosts "${APP_DOMAIN}" | awk '{print $1}')"
+          else
+            echo "::warning::DNS de ${APP_DOMAIN} ainda nao propagou (nao bloqueia o deploy). Confira o registro A no Registro.br."
+          fi          echo ""
           if nc -z -w 3 "${APP_PUBLIC_IP}" 5432 2>/dev/null; then
             echo "::error::Porta 5432 está acessível publicamente!"
             exit 1
