@@ -340,9 +340,9 @@ jobs:
               "letsencrypt_email": os.environ.get("LETSENCRYPT_EMAIL") or "SEU_EMAIL",
               "tls_cert_pem": os.environ.get("TLS_CERT_PEM") or "",
               "tls_key_pem": os.environ.get("TLS_KEY_PEM") or "",
-              "update_operating_system": ${{ inputs.update_os }},
-              "update_application_images": ${{ inputs.update_app_images }},
-              "update_database_image": ${{ inputs.update_db_image }},
+              "update_operating_system": "${{ inputs.update_os }}" == "true",
+              "update_application_images": "${{ inputs.update_app_images }}" == "true",
+              "update_database_image": "${{ inputs.update_db_image }}" == "true",
               "extra_packages": "${{ inputs.extra_packages }}",
           }
           with open(".ansible-vars.json", "w", encoding="utf-8") as fh:
