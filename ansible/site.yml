@@ -310,7 +310,12 @@
       when: tls_mode == 'letsencrypt'
 
     - name: Recarregar Nginx antes do desafio ACME
-      ansible.builtin.meta: flush_handlers
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
+      when:
+        - tls_mode == 'letsencrypt'
+        - not (tls_certificate.stat.exists | default(false))
 
     - name: Emitir certificado TLS para o domínio
       ansible.builtin.command:
