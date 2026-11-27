@@ -140,6 +140,10 @@ jobs:
               exit 1
             fi
           done
+          if ! [[ "$GCP_PROJECT_ID" =~ ^[a-z][a-z0-9-]{4,28}[a-z0-9]$ ]]; then
+            echo "::error::GCP_PROJECT_ID inválido (tamanho=${#GCP_PROJECT_ID}). Use só letras minúsculas, números e hífen comum (-), sem espaços/quebras de linha. Digite o valor à mão no segredo."
+            exit 1
+          fi
 
       - name: Autenticar no Google Cloud
         uses: google-github-actions/auth@v2
