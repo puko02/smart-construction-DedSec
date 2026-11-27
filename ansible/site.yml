@@ -280,6 +280,7 @@
         owner: root
         group: root
         mode: "0644"
+      notify: Recarregar Nginx
       when:
         - tls_mode == 'letsencrypt'
         - not (tls_certificate.stat.exists | default(false))
@@ -307,6 +308,9 @@
         state: started
         enabled: true
       when: tls_mode == 'letsencrypt'
+
+    - name: Recarregar Nginx antes do desafio ACME
+      ansible.builtin.meta: flush_handlers
 
     - name: Emitir certificado TLS para o domínio
       ansible.builtin.command:

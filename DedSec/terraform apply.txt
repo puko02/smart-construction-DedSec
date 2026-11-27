@@ -1,0 +1,78 @@
+Run terraform apply -no-color -input=false -auto-approve tfplan
+google_service_account.app_vm: Creating...
+google_project_service.required["compute.googleapis.com"]: Creating...
+google_project_service.required["iap.googleapis.com"]: Creating...
+google_project_iam_member.compute_viewer_user: Creating...
+google_compute_address.app_public: Creating...
+google_project_service.required["artifactregistry.googleapis.com"]: Creating...
+google_compute_disk.app_data: Creating...
+google_compute_disk.db_data: Creating...
+google_project_service.required["compute.googleapis.com"]: Creation complete after 3s [id=***/compute.googleapis.com]
+google_project_service.required["artifactregistry.googleapis.com"]: Creation complete after 3s [id=***/artifactregistry.googleapis.com]
+google_project_service.required["iap.googleapis.com"]: Creation complete after 3s [id=***/iap.googleapis.com]
+google_project_iam_member.iap_tunnel_user: Creating...
+google_compute_network.smart: Creating...
+google_artifact_registry_repository.docker: Creating...
+google_project_iam_member.compute_viewer_user: Still creating... [10s elapsed]
+google_service_account.app_vm: Still creating... [10s elapsed]
+google_compute_address.app_public: Still creating... [10s elapsed]
+google_compute_disk.app_data: Still creating... [10s elapsed]
+google_compute_disk.db_data: Still creating... [10s elapsed]
+google_project_iam_member.compute_viewer_user: Creation complete after 12s [id=***/roles/compute.viewer/user:***]
+google_compute_disk.db_data: Creation complete after 12s [id=projects/***/zones/us-central1-a/disks/smart-construction-db-data]
+google_project_iam_member.iap_tunnel_user: Creation complete after 9s [id=***/roles/iap.tunnelResourceAccessor/user:***]
+google_compute_disk.app_data: Creation complete after 12s [id=projects/***/zones/us-central1-a/disks/smart-construction-app-data]
+google_compute_address.app_public: Creation complete after 13s [id=projects/***/regions/us-central1/addresses/smart-construction-app-public-ip]
+google_compute_network.smart: Still creating... [10s elapsed]
+google_artifact_registry_repository.docker: Still creating... [10s elapsed]
+google_artifact_registry_repository.docker: Creation complete after 12s [id=projects/***/locations/us-central1/repositories/smart-construction]
+google_compute_network.smart: Creation complete after 12s [id=projects/***/global/networks/smart-construction-vpc]
+google_compute_subnetwork.smart: Creating...
+google_compute_firewall.db_from_app: Creating...
+google_compute_firewall.iap_ssh: Creating...
+google_compute_firewall.app_https: Creating...
+google_service_account.app_vm: Creation complete after 15s [id=projects/***/serviceAccounts/smart-construction-app@***.iam.gserviceaccount.com]
+google_project_iam_member.app_registry_reader: Creating...
+google_project_iam_member.app_registry_reader: Creation complete after 7s [id=***/roles/artifactregistry.reader/serviceAccount:smart-construction-app@***.iam.gserviceaccount.com]
+google_compute_firewall.db_from_app: Still creating... [10s elapsed]
+google_compute_firewall.iap_ssh: Still creating... [10s elapsed]
+google_compute_firewall.app_https: Still creating... [10s elapsed]
+google_compute_subnetwork.smart: Still creating... [10s elapsed]
+google_compute_firewall.db_from_app: Creation complete after 11s [id=projects/***/global/firewalls/smart-construction-allow-db-from-app]
+google_compute_firewall.iap_ssh: Creation complete after 11s [id=projects/***/global/firewalls/smart-construction-allow-iap-ssh]
+google_compute_subnetwork.smart: Creation complete after 11s [id=projects/***/regions/us-central1/subnetworks/smart-construction-subnet]
+google_compute_address.app_private: Creating...
+google_compute_address.db_private: Creating...
+google_compute_firewall.app_https: Creation complete after 11s [id=projects/***/global/firewalls/smart-construction-allow-public-http-https]
+google_compute_address.app_private: Still creating... [10s elapsed]
+google_compute_address.db_private: Still creating... [10s elapsed]
+google_compute_address.app_private: Creation complete after 13s [id=projects/***/regions/us-central1/addresses/smart-construction-app-private-ip]
+google_compute_instance.app: Creating...
+google_compute_address.db_private: Creation complete after 13s [id=projects/***/regions/us-central1/addresses/smart-construction-db-private-ip]
+google_compute_instance.db: Creating...
+google_compute_instance.app: Still creating... [10s elapsed]
+google_compute_instance.db: Still creating... [10s elapsed]
+google_compute_instance.app: Still creating... [20s elapsed]
+google_compute_instance.db: Still creating... [20s elapsed]
+google_compute_instance.db: Creation complete after 28s [id=projects/***/zones/us-central1-a/instances/smart-construction-db]
+google_compute_instance.app: Creation complete after 28s [id=projects/***/zones/us-central1-a/instances/smart-construction-app]
+
+Apply complete! Resources: 20 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+ansible_inventory_values = {
+  "app_private" = "10.20.0.10"
+  "app_public" = "35.193.135.222"
+  "app_server" = "smart-construction-app"
+  "db_private" = "10.20.0.11"
+  "db_server" = "smart-construction-db"
+}
+app_private_ip = "10.20.0.10"
+app_public_ip = "35.193.135.222"
+app_server_name = "smart-construction-app"
+artifact_registry_repository = "us-central1-docker.pkg.dev/***/smart-construction"
+db_private_ip = "10.20.0.11"
+db_public_ip = "136.111.79.231"
+db_server_name = "smart-construction-db"
+environment = "prod"
