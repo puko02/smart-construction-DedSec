@@ -1,3 +1,25 @@
+variable "environment" {
+  description = "Ambiente de destino da infraestrutura (dev, homolog ou prod)."
+  type        = string
+  default     = "prod"
+
+  validation {
+    condition     = contains(["dev", "homolog", "prod"], var.environment)
+    error_message = "environment deve ser dev, homolog ou prod."
+  }
+}
+
+variable "instance_name" {
+  description = "Prefixo de nome das máquinas virtuais (ex.: smart-construction)."
+  type        = string
+  default     = "smart-construction"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,40}$", var.instance_name))
+    error_message = "instance_name deve usar apenas letras minúsculas, números e hífen."
+  }
+}
+
 variable "project_id" {
   description = "ID do projeto Google Cloud com faturamento habilitado."
   type        = string

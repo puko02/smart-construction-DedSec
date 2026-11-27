@@ -1,0 +1,129 @@
+---
+- name: Localizar último snapshot de backup do PostgreSQL
+  hosts: db_servers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Listar diretórios de backup disponíveis no banco
+      ansible.builtin.find:
+        paths: "{{ data_mountpoint }}/backups"
+        file_type: directory
+      register: db_backups
+
+    - name: Garantir que existe ao menos um backup de banco
+      ansible.builtin.assert:
+        that:
+          - db_backups.matched > 0
+        fail_msg: "Nenhum backup encontrado em {{ data_mountpoint }}/backups. Execute backup.yml antes."
+
+    - name: Selecionar snapshot alvo (parâmetro target_snapshot ou mais recente)
+      ansible.builtin.set_fact:
+        db_snapshot_dir: >-
+          {{
+            (data_mountpoint ~ '/backups/' ~ target_snapshot)
+            if (target_snapshot is defined and (target_snapshot | length > 0))
+            else ((db_backups.files | sort(attribute='path') | last).path)
+          }}
+
+    - name: Validar integridade SHA256 do backup do banco
+      ansible.builtin.command:
+        cmd: sha256sum -c SHA256SUMS
+        chdir: "{{ db_snapshot_dir }}"
+      changed_when: false
+
+    - name: Restaurar backup em contêiner PostgreSQL isolado (sem sobrescrever produção)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        CONTAINER="smart-restore-verify-$$"
+        cleanup() { docker rm -f "$CONTAINER" >/dev/null 2>&1 || true; }
+        trap cleanup EXIT
+
+        docker run -d --name "$CONTAINER" \
+          -e POSTGRES_DB=smart_construction \
+          -e POSTGRES_USER=smart_migrator \
+          -e POSTGRES_PASSWORD=restore_verify_only \
+          postgres:17-bookworm >/dev/null
+
+        for i in $(seq 1 30); do
+          if docker exec "$CONTAINER" pg_isready -U smart_migrator -d smart_construction >/dev/null 2>&1; then
+            break
+          fi
+          sleep 2
+        done
+
+        docker exec "$CONTAINER" psql -U smart_migrator -d smart_construction -c "CREATE ROLE smart_api LOGIN;"
+        docker exec -i "$CONTAINER" pg_restore --no-owner --role=smart_migrator \
+          -U smart_migrator -d smart_construction < "{{ db_snapshot_dir }}/database.dump"
+        TABLES=$(docker exec "$CONTAINER" psql -U smart_migrator -d smart_construction \
+          -tAc "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'smart';")
+        CADASTROS=$(docker exec "$CONTAINER" psql -U smart_migrator -d smart_construction \
+          -tAc "SELECT count(*) FROM smart.cadastros;")
+        PROFISSOES=$(docker exec "$CONTAINER" psql -U smart_migrator -d smart_construction \
+          -tAc "SELECT count(*) FROM smart.profissoes;")
+        echo "restore_verify tables=$TABLES cadastros=$CADASTROS profissoes=$PROFISSOES"
+        [ "$TABLES" -gt 0 ]
+      args:
+        executable: /bin/bash
+      register: db_restore_output
+      changed_when: false
+
+    - name: Exibir resultado da restauração isolada do PostgreSQL
+      ansible.builtin.debug:
+        var: db_restore_output.stdout_lines
+
+- name: Validar restauração isolada dos backups de arquivos e segredos
+  hosts: app_servers
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Listar diretórios de backup disponíveis na aplicação
+      ansible.builtin.find:
+        paths: "{{ data_mountpoint }}/backups"
+        file_type: directory
+      register: app_backups
+
+    - name: Garantir que existe ao menos um backup da aplicação
+      ansible.builtin.assert:
+        that:
+          - app_backups.matched > 0
+        fail_msg: "Nenhum backup encontrado em {{ data_mountpoint }}/backups. Execute backup.yml antes."
+
+    - name: Selecionar snapshot alvo da aplicação
+      ansible.builtin.set_fact:
+        app_snapshot_dir: >-
+          {{
+            (data_mountpoint ~ '/backups/' ~ target_snapshot)
+            if (target_snapshot is defined and (target_snapshot | length > 0))
+            else ((app_backups.files | sort(attribute='path') | last).path)
+          }}
+
+    - name: Validar integridade SHA256 do backup da aplicação
+      ansible.builtin.command:
+        cmd: sha256sum -c SHA256SUMS
+        chdir: "{{ app_snapshot_dir }}"
+      changed_when: false
+
+    - name: Extrair volumes em diretório temporário isolado e conferir conteúdo
+      ansible.builtin.shell: |
+        set -euo pipefail
+        TMPDIR="$(mktemp -d /tmp/smart-restore-verify.XXXXXX)"
+        trap 'rm -rf "$TMPDIR"' EXIT
+        mkdir -p "$TMPDIR/editorial" "$TMPDIR/private" "$TMPDIR/secrets"
+        tar -xf "{{ app_snapshot_dir }}/editorial.tar" -C "$TMPDIR/editorial"
+        tar -xf "{{ app_snapshot_dir }}/private.tar" -C "$TMPDIR/private"
+        tar -xf "{{ app_snapshot_dir }}/secrets.tar" -C "$TMPDIR/secrets"
+        EDITORIAL_FILES=$(find "$TMPDIR/editorial" -type f | wc -l)
+        PRIVATE_FILES=$(find "$TMPDIR/private" -type f | wc -l)
+        SECRETS_FILES=$(find "$TMPDIR/secrets" -type f | wc -l)
+        echo "restore_files editorial=$EDITORIAL_FILES private=$PRIVATE_FILES secrets=$SECRETS_FILES"
+        [ "$SECRETS_FILES" -gt 0 ]
+      args:
+        executable: /bin/bash
+      register: app_restore_output
+      changed_when: false
+
+    - name: Exibir resultado da restauração isolada de arquivos
+      ansible.builtin.debug:
+        var: app_restore_output.stdout_lines

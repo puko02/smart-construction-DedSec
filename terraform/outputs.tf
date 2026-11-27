@@ -23,12 +23,28 @@ output "artifact_registry_repository" {
   value       = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.docker.repository_id}"
 }
 
+output "environment" {
+  description = "Ambiente configurado na implantação."
+  value       = var.environment
+}
+
+output "app_server_name" {
+  description = "Nome da instância GCE da aplicação."
+  value       = google_compute_instance.app.name
+}
+
+output "db_server_name" {
+  description = "Nome da instância GCE do PostgreSQL."
+  value       = google_compute_instance.db.name
+}
+
 output "ansible_inventory_values" {
   description = "Nomes das VMs usados pelo inventário Ansible com o túnel IAP e IP privado do banco."
   value = {
-    app_server = google_compute_instance.app.name
-    db_server  = google_compute_instance.db.name
-    db_private = google_compute_instance.db.network_interface[0].network_ip
-    app_public = google_compute_address.app_public.address
+    app_server  = google_compute_instance.app.name
+    db_server   = google_compute_instance.db.name
+    app_private = google_compute_instance.app.network_interface[0].network_ip
+    db_private  = google_compute_instance.db.network_interface[0].network_ip
+    app_public  = google_compute_address.app_public.address
   }
 }

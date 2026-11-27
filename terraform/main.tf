@@ -97,10 +97,10 @@ resource "google_compute_disk" "app_data" {
   zone = var.zone
   size = var.data_disk_size_gb
 
-  labels = { application = "smart-construction", role = "app-data" }
-
-  lifecycle {
-    prevent_destroy = true
+  labels = {
+    application = "smart-construction"
+    environment = var.environment
+    role        = "app-data"
   }
 }
 
@@ -110,10 +110,10 @@ resource "google_compute_disk" "db_data" {
   zone = var.zone
   size = var.data_disk_size_gb
 
-  labels = { application = "smart-construction", role = "db-data" }
-
-  lifecycle {
-    prevent_destroy = true
+  labels = {
+    application = "smart-construction"
+    environment = var.environment
+    role        = "db-data"
   }
 }
 
@@ -152,7 +152,7 @@ resource "google_artifact_registry_repository" "docker" {
 }
 
 resource "google_compute_instance" "app" {
-  name                      = "smart-construction-app"
+  name                      = "${var.instance_name}-app"
   machine_type              = var.app_machine_type
   zone                      = var.zone
   allow_stopping_for_update = true
@@ -191,13 +191,17 @@ resource "google_compute_instance" "app" {
     ssh-keys = "${var.ssh_user}:${trimspace(var.ssh_public_key)}"
   }
 
-  labels = { application = "smart-construction", role = "app" }
+  labels = {
+    application = "smart-construction"
+    environment = var.environment
+    role        = "app"
+  }
 
   depends_on = [google_project_iam_member.app_registry_reader]
 }
 
 resource "google_compute_instance" "db" {
-  name                      = "smart-construction-db"
+  name                      = "${var.instance_name}-db"
   machine_type              = var.db_machine_type
   zone                      = var.zone
   allow_stopping_for_update = true
@@ -230,5 +234,9 @@ resource "google_compute_instance" "db" {
     ssh-keys = "${var.ssh_user}:${trimspace(var.ssh_public_key)}"
   }
 
-  labels = { application = "smart-construction", role = "db" }
+  labels = {
+    application = "smart-construction"
+    environment = var.environment
+    role        = "db"
+  }
 }

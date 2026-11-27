@@ -1,0 +1,130 @@
+---
+- name: Definir identificador de snapshot de backup
+  hosts: localhost
+  connection: local
+  gather_facts: true
+
+  tasks:
+    - name: Gerar timestamp UTC único do snapshot
+      ansible.builtin.set_fact:
+        backup_id: "{{ ansible_date_time.iso8601_basic_short }}-1"
+      changed_when: false
+
+- name: Gerar backup consistente do PostgreSQL na VM de banco
+  hosts: db_servers
+  become: true
+  gather_facts: false
+
+  vars:
+    snapshot_id: "{{ hostvars['localhost']['backup_id'] }}"
+    backup_dir: "{{ data_mountpoint }}/backups/{{ snapshot_id }}"
+
+  tasks:
+    - name: Garantir diretório de backup do banco
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Executar pg_dump em formato customizado
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker compose -f {{ db_compose_file }} exec -T db \
+          pg_dump -U smart_migrator -d smart_construction -Fc > "{{ backup_dir }}/database.dump"
+      args:
+        chdir: "{{ app_directory }}"
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Gerar manifesto SHA256SUMS do banco
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cd "{{ backup_dir }}"
+        sha256sum database.dump > SHA256SUMS
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Exibir caminho do backup de banco gerado
+      ansible.builtin.debug:
+        msg: "Backup do PostgreSQL salvo em {{ backup_dir }}/database.dump"
+
+- name: Gerar backup dos volumes SeaweedFS e configuração na VM de aplicação
+  hosts: app_servers
+  become: true
+  gather_facts: false
+
+  vars:
+    snapshot_id: "{{ hostvars['localhost']['backup_id'] }}"
+    backup_dir: "{{ data_mountpoint }}/backups/{{ snapshot_id }}"
+
+  tasks:
+    - name: Garantir diretório de backup da aplicação
+      ansible.builtin.file:
+        path: "{{ backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Compactar volume editorial (smart-assets)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        VOL_PATH="$(docker volume inspect -f '{{ '{{' }} .Mountpoint {{ '}}' }}' smart-construction_storage-data)"
+        tar -cf "{{ backup_dir }}/editorial.tar" -C "$VOL_PATH" .
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Compactar volume privado (smart-cadastros-private)
+      ansible.builtin.shell: |
+        set -euo pipefail
+        VOL_PATH="$(docker volume inspect -f '{{ '{{' }} .Mountpoint {{ '}}' }}' smart-construction_private-storage-data)"
+        tar -cf "{{ backup_dir }}/private.tar" -C "$VOL_PATH" .
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Compactar pasta .secrets
+      ansible.builtin.command:
+        argv:
+          - tar
+          - -cf
+          - "{{ backup_dir }}/secrets.tar"
+          - -C
+          - "{{ app_directory }}"
+          - .secrets
+      changed_when: true
+      no_log: true
+
+    - name: Copiar .env de produção para o pacote de backup
+      ansible.builtin.copy:
+        src: "{{ app_directory }}/.env"
+        dest: "{{ backup_dir }}/env.production"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Registrar tag/commit do release no backup
+      ansible.builtin.shell: |
+        set -euo pipefail
+        git -C "{{ app_directory }}" rev-parse --short HEAD > "{{ backup_dir }}/release.txt"
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Gerar manifesto SHA256SUMS dos arquivos da aplicação
+      ansible.builtin.shell: |
+        set -euo pipefail
+        cd "{{ backup_dir }}"
+        sha256sum editorial.tar private.tar secrets.tar env.production release.txt > SHA256SUMS
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Exibir identificador do snapshot de backup criado
+      ansible.builtin.debug:
+        msg: "Snapshot completo criado: {{ snapshot_id }} em {{ backup_dir }}"

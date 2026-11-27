@@ -1,0 +1,532 @@
+name: Infrastructure Deploy & Lifecycle
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Ação da pipeline (deploy, backup_and_restore_test ou destroy)"
+        type: choice
+        required: true
+        default: "deploy"
+        options:
+          - deploy
+          - backup_and_restore_test
+          - destroy
+      environment:
+        description: "Ambiente de destino (dev, homolog ou prod)"
+        type: choice
+        required: true
+        default: "prod"
+        options:
+          - dev
+          - homolog
+          - prod
+      instance_name:
+        description: "Prefixo de nome das máquinas virtuais"
+        type: string
+        required: true
+        default: "smart-construction"
+      app_machine_type:
+        description: "Tipo de máquina da VM de aplicação"
+        type: string
+        required: true
+        default: "e2-standard-2"
+      db_machine_type:
+        description: "Tipo de máquina da VM de banco (PostgreSQL)"
+        type: string
+        required: true
+        default: "e2-medium"
+      data_disk_size_gb:
+        description: "Tamanho dos discos persistentes em GB (>= 10)"
+        type: string
+        required: true
+        default: "30"
+      docker_tag:
+        description: "Tag das imagens Docker web/api (ex.: v1.0.0, latest ou 'sha')"
+        type: string
+        required: true
+        default: "sha"
+      build_and_push_images:
+        description: "Construir e publicar imagens web/api no Artifact Registry"
+        type: boolean
+        required: true
+        default: true
+      update_os:
+        description: "Aplicar atualizações de pacotes do sistema operacional (apt upgrade)"
+        type: boolean
+        required: true
+        default: false
+      update_app_images:
+        description: "Forçar pull e atualização dos contêineres da aplicação"
+        type: boolean
+        required: true
+        default: true
+      update_db_image:
+        description: "Forçar pull e atualização da imagem do PostgreSQL"
+        type: boolean
+        required: true
+        default: false
+      extra_packages:
+        description: "Pacotes adicionais separados por vírgula (ex.: curl,git,unzip)"
+        type: string
+        required: false
+        default: ""
+      tls_mode:
+        description: "Modo TLS do Nginx (cloudflare_origin, letsencrypt ou self_signed)"
+        type: choice
+        required: true
+        default: "cloudflare_origin"
+        options:
+          - cloudflare_origin
+          - letsencrypt
+          - self_signed
+      confirm_destroy:
+        description: "Digite DESTROY para confirmar encerramento (apenas quando action=destroy)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_REGION: us-central1
+  GCP_ZONE: us-central1-a
+  SSH_USER: fabio
+
+jobs:
+  # ─────────────────────────────────────────────────────────────────
+  # 1. Terraform: Init, Plan & Apply
+  # ─────────────────────────────────────────────────────────────────
+  terraform:
+    name: "1 · Terraform Provision / Update"
+    if: ${{ inputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    outputs:
+      app_server_name: ${{ steps.tf_outputs.outputs.app_server_name }}
+      db_server_name: ${{ steps.tf_outputs.outputs.db_server_name }}
+      app_public_ip: ${{ steps.tf_outputs.outputs.app_public_ip }}
+      app_private_ip: ${{ steps.tf_outputs.outputs.app_private_ip }}
+      db_private_ip: ${{ steps.tf_outputs.outputs.db_private_ip }}
+      artifact_registry_repository: ${{ steps.tf_outputs.outputs.artifact_registry_repository }}
+      effective_tag: ${{ steps.tag.outputs.effective_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolver tag efetiva da imagem
+        id: tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.docker_tag }}" = "sha" ]; then
+            echo "effective_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          else
+            echo "effective_tag=${{ inputs.docker_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validar segredos obrigatórios do GCP e SSH
+        shell: bash
+        env:
+          GCP_SA_KEY: ${{ secrets.GCP_SA_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          SSH_PUBLIC_KEY: ${{ secrets.TF_VAR_ssh_public_key }}
+          IAP_USER_EMAIL: ${{ secrets.TF_VAR_iap_tunnel_user_email }}
+        run: |
+          set -euo pipefail
+          for var in GCP_SA_KEY GCP_PROJECT_ID TF_STATE_BUCKET SSH_PUBLIC_KEY IAP_USER_EMAIL; do
+            if [ -z "${!var:-}" ]; then
+              echo "::error::Secret obrigatório $var não configurado no repositório."
+              exit 1
+            fi
+          done
+
+      - name: Autenticar no Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Gerar configuração do backend remoto GCS
+        shell: bash
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          cat <<EOF > terraform/backend.hcl
+          bucket = "${TF_STATE_BUCKET}"
+          prefix = "smart-construction/${{ inputs.environment }}"
+          EOF
+
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init -input=false -backend-config=backend.hcl
+
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+
+      - name: Terraform Plan
+        working-directory: terraform
+        env:
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ env.GCP_REGION }}
+          TF_VAR_zone: ${{ env.GCP_ZONE }}
+          TF_VAR_environment: ${{ inputs.environment }}
+          TF_VAR_instance_name: ${{ inputs.instance_name }}
+          TF_VAR_app_machine_type: ${{ inputs.app_machine_type }}
+          TF_VAR_db_machine_type: ${{ inputs.db_machine_type }}
+          TF_VAR_data_disk_size_gb: ${{ inputs.data_disk_size_gb }}
+          TF_VAR_ssh_user: ${{ env.SSH_USER }}
+          TF_VAR_ssh_public_key: ${{ secrets.TF_VAR_ssh_public_key }}
+          TF_VAR_iap_tunnel_user_email: ${{ secrets.TF_VAR_iap_tunnel_user_email }}
+        run: terraform plan -no-color -input=false -out=tfplan
+
+      - name: Terraform Apply
+        working-directory: terraform
+        run: terraform apply -no-color -input=false -auto-approve tfplan
+
+      - name: Exportar outputs do Terraform
+        id: tf_outputs
+        working-directory: terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "app_server_name=$(terraform output -raw app_server_name)" >> "$GITHUB_OUTPUT"
+          echo "db_server_name=$(terraform output -raw db_server_name)" >> "$GITHUB_OUTPUT"
+          echo "app_public_ip=$(terraform output -raw app_public_ip)" >> "$GITHUB_OUTPUT"
+          echo "app_private_ip=$(terraform output -raw app_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "db_private_ip=$(terraform output -raw db_private_ip)" >> "$GITHUB_OUTPUT"
+          echo "artifact_registry_repository=$(terraform output -raw artifact_registry_repository)" >> "$GITHUB_OUTPUT"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 2. Build & Push Docker Images (Artifact Registry)
+  # ─────────────────────────────────────────────────────────────────
+  build-images:
+    name: "2 · Build & Push Images"
+    needs: terraform
+    if: ${{ inputs.action == 'deploy' && inputs.build_and_push_images }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autenticar no Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configurar gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Autenticar Docker no Artifact Registry
+        run: gcloud auth configure-docker "${{ env.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build & Push web e api
+        shell: bash
+        env:
+          REGISTRY: ${{ needs.terraform.outputs.artifact_registry_repository }}
+          IMAGE_TAG: ${{ needs.terraform.outputs.effective_tag }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --build-arg NEXT_PUBLIC_ASSETS_BASE_URL=/assets \
+            --build-arg ASSETS_PROXY_URL=http://storage:8333/smart-assets \
+            --build-arg API_PROXY_URL=http://api:8000 \
+            -t "${REGISTRY}/web:${IMAGE_TAG}" .
+          docker build -f backend/Dockerfile -t "${REGISTRY}/api:${IMAGE_TAG}" backend
+          docker push "${REGISTRY}/web:${IMAGE_TAG}"
+          docker push "${REGISTRY}/api:${IMAGE_TAG}"
+
+  # ─────────────────────────────────────────────────────────────────
+  # 3. Ansible: Configure OS, Docker, HTTPS & Containers
+  # ─────────────────────────────────────────────────────────────────
+  ansible:
+    name: "3 · Ansible Configure & Deploy"
+    needs: [terraform, build-images]
+    if: >-
+      always() &&
+      inputs.action == 'deploy' &&
+      needs.terraform.result == 'success' &&
+      (needs.build-images.result == 'success' || needs.build-images.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autenticar no Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configurar gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Instalar Ansible e collections
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade ansible-core
+          ansible-galaxy collection install -r ansible/requirements.yml
+
+      - name: Preparar chave SSH, inventário dinâmico e variáveis
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+          LETSENCRYPT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          TLS_CERT_PEM: ${{ secrets.CLOUDFLARE_ORIGIN_CERT }}
+          TLS_KEY_PEM: ${{ secrets.CLOUDFLARE_ORIGIN_KEY }}
+          APP_SERVER_NAME: ${{ needs.terraform.outputs.app_server_name }}
+          DB_SERVER_NAME: ${{ needs.terraform.outputs.db_server_name }}
+          APP_PRIVATE_IP: ${{ needs.terraform.outputs.app_private_ip }}
+          DB_PRIVATE_IP: ${{ needs.terraform.outputs.db_private_ip }}
+          IMAGE_TAG: ${{ needs.terraform.outputs.effective_tag }}
+          REPO_URL: "https://github.com/${{ github.repository }}.git"
+          REPO_REF: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "::error::Secret SSH_PRIVATE_KEY não configurado."
+            exit 1
+          fi
+          if [ -z "${APP_DOMAIN:-}" ]; then
+            echo "::error::Secret APP_DOMAIN não configurado."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          cat <<EOF > .ansible-hosts.yml
+          all:
+            children:
+              app_servers:
+                hosts:
+                  ${APP_SERVER_NAME}:
+                    ansible_host: ${APP_SERVER_NAME}
+              db_servers:
+                hosts:
+                  ${DB_SERVER_NAME}:
+                    ansible_host: ${DB_SERVER_NAME}
+          EOF
+
+          python3 - <<'PY'
+          import json, os
+          vars_payload = {
+              "target_env": "${{ inputs.environment }}",
+              "project_id": os.environ["GCP_PROJECT_ID"],
+              "region": os.environ["GCP_REGION"],
+              "zone": os.environ["GCP_ZONE"],
+              "ssh_user": os.environ["SSH_USER"],
+              "ssh_private_key_file": os.path.expanduser("~/.ssh/deploy_key"),
+              "repo_url": os.environ["REPO_URL"],
+              "repo_version": os.environ["REPO_REF"],
+              "app_private_ip": os.environ["APP_PRIVATE_IP"],
+              "db_private_ip": os.environ["DB_PRIVATE_IP"],
+              "app_image_tag": os.environ["IMAGE_TAG"],
+              "app_domain": os.environ["APP_DOMAIN"],
+              "tls_mode": "${{ inputs.tls_mode }}",
+              "letsencrypt_email": os.environ.get("LETSENCRYPT_EMAIL") or "SEU_EMAIL",
+              "tls_cert_pem": os.environ.get("TLS_CERT_PEM") or "",
+              "tls_key_pem": os.environ.get("TLS_KEY_PEM") or "",
+              "update_operating_system": ${{ inputs.update_os }},
+              "update_application_images": ${{ inputs.update_app_images }},
+              "update_database_image": ${{ inputs.update_db_image }},
+              "extra_packages": "${{ inputs.extra_packages }}",
+          }
+          with open(".ansible-vars.json", "w", encoding="utf-8") as fh:
+              json.dump(vars_payload, fh)
+          os.chmod(".ansible-vars.json", 0o600)
+          PY
+
+      - name: Aguardar conectividade SSH via IAP
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 18); do
+            if ansible -i .ansible-hosts.yml all -e @.ansible-vars.json -m ping; then
+              exit 0
+            fi
+            echo "Aguardando SSH/IAP nas VMs (tentativa $i/18)..."
+            sleep 10
+          done
+          exit 1
+
+      - name: Executar playbook Ansible (site.yml)
+        run: ansible-playbook -i .ansible-hosts.yml ansible/site.yml -e @.ansible-vars.json
+
+      - name: Remover arquivos temporários sensíveis do runner
+        if: always()
+        run: rm -f ~/.ssh/deploy_key .ansible-vars.json .ansible-hosts.yml
+
+  # ─────────────────────────────────────────────────────────────────
+  # 4. External Verification (HTTPS + DB Port Isolation)
+  # ─────────────────────────────────────────────────────────────────
+  verify:
+    name: "4 · Verify HTTPS & Network Isolation"
+    needs: [terraform, ansible]
+    if: ${{ inputs.action == 'deploy' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verificar acesso HTTPS externo e bloqueio da porta 5432
+        shell: bash
+        env:
+          APP_DOMAIN: ${{ secrets.APP_DOMAIN }}
+          APP_PUBLIC_IP: ${{ needs.terraform.outputs.app_public_ip }}
+        run: |
+          set -euo pipefail
+          echo "Testando HTTPS em https://${APP_DOMAIN}/healthz ..."
+          curl -fsS -k --max-time 15 "https://${APP_DOMAIN}/healthz"
+          echo ""
+          if nc -z -w 3 "${APP_PUBLIC_IP}" 5432 2>/dev/null; then
+            echo "::error::Porta 5432 está acessível publicamente!"
+            exit 1
+          fi
+          echo "Porta 5432 confirmada fechada na internet."
+
+  # ─────────────────────────────────────────────────────────────────
+  # 5. Backup & Isolated Restore Verification
+  # ─────────────────────────────────────────────────────────────────
+  backup-and-restore-test:
+    name: "Backup & Isolated Restore Test"
+    if: ${{ inputs.action == 'backup_and_restore_test' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Autenticar no Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configurar gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Preparar Terraform outputs para inventário
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Ler instâncias atuais do state
+        working-directory: terraform
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          cat <<EOF > backend.hcl
+          bucket = "${TF_STATE_BUCKET}"
+          prefix = "smart-construction/${{ inputs.environment }}"
+          EOF
+          terraform init -input=false -backend-config=backend.hcl
+          echo "APP_SERVER_NAME=$(terraform output -raw app_server_name)" >> "$GITHUB_ENV"
+          echo "DB_SERVER_NAME=$(terraform output -raw db_server_name)" >> "$GITHUB_ENV"
+
+      - name: Instalar Ansible e executar backup + teste de restauração isolada
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+        run: |
+          set -euo pipefail
+          python3 -m pip install --upgrade ansible-core
+          ansible-galaxy collection install -r ansible/requirements.yml
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          cat <<EOF > .ansible-hosts.yml
+          all:
+            children:
+              app_servers:
+                hosts:
+                  ${APP_SERVER_NAME}:
+                    ansible_host: ${APP_SERVER_NAME}
+              db_servers:
+                hosts:
+                  ${DB_SERVER_NAME}:
+                    ansible_host: ${DB_SERVER_NAME}
+          EOF
+
+          EXTRA_ARGS="-e project_id=${GCP_PROJECT_ID} -e region=${GCP_REGION} -e zone=${GCP_ZONE} -e ssh_user=${SSH_USER} -e ssh_private_key_file=${HOME}/.ssh/deploy_key"
+          ansible-playbook -i .ansible-hosts.yml ansible/backup.yml $EXTRA_ARGS
+          ansible-playbook -i .ansible-hosts.yml ansible/restore-test.yml $EXTRA_ARGS
+
+      - name: Limpar chave temporária
+        if: always()
+        run: rm -f ~/.ssh/deploy_key .ansible-hosts.yml
+
+  # ─────────────────────────────────────────────────────────────────
+  # 6. Teardown / Destroy Infrastructure
+  # ─────────────────────────────────────────────────────────────────
+  destroy:
+    name: "Destroy Infrastructure"
+    if: ${{ inputs.action == 'destroy' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validar confirmação explícita DESTROY
+        shell: bash
+        run: |
+          if [ "${{ inputs.confirm_destroy }}" != "DESTROY" ]; then
+            echo "::error::Para encerrar a infraestrutura, informe confirm_destroy=DESTROY."
+            exit 1
+          fi
+
+      - name: Autenticar no Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Configurar gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configurar Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Terraform Init & Destroy
+        working-directory: terraform
+        env:
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+          TF_VAR_project_id: ${{ secrets.GCP_PROJECT_ID }}
+          TF_VAR_region: ${{ env.GCP_REGION }}
+          TF_VAR_zone: ${{ env.GCP_ZONE }}
+          TF_VAR_environment: ${{ inputs.environment }}
+          TF_VAR_instance_name: ${{ inputs.instance_name }}
+          TF_VAR_app_machine_type: ${{ inputs.app_machine_type }}
+          TF_VAR_db_machine_type: ${{ inputs.db_machine_type }}
+          TF_VAR_data_disk_size_gb: ${{ inputs.data_disk_size_gb }}
+          TF_VAR_ssh_user: ${{ env.SSH_USER }}
+          TF_VAR_ssh_public_key: ${{ secrets.TF_VAR_ssh_public_key }}
+          TF_VAR_iap_tunnel_user_email: ${{ secrets.TF_VAR_iap_tunnel_user_email }}
+        run: |
+          set -euo pipefail
+          cat <<EOF > backend.hcl
+          bucket = "${TF_STATE_BUCKET}"
+          prefix = "smart-construction/${{ inputs.environment }}"
+          EOF
+          terraform init -input=false -backend-config=backend.hcl
+          terraform destroy -no-color -input=false -auto-approve
+
+      - name: Relatório pós-encerramento (recursos remanescentes)
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          TF_STATE_BUCKET: ${{ secrets.TF_STATE_BUCKET }}
+        run: |
+          set -euo pipefail
+          echo "=== Instâncias GCE ativas após destroy ==="
+          gcloud compute instances list --project="$GCP_PROJECT_ID"
+          echo "=== Discos persistentes ativos após destroy ==="
+          gcloud compute disks list --project="$GCP_PROJECT_ID"
+          echo "=== Endereços IP externos ativos após destroy ==="
+          gcloud compute addresses list --project="$GCP_PROJECT_ID"
+          echo "=== Recurso mantido fora do Terraform ==="
+          echo "Bucket GCS de state: gs://${TF_STATE_BUCKET} (armazenamento padrão de baixo custo para preservar o histórico do state)."

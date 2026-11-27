@@ -1,7 +1,7 @@
 ---
 app_directory: /opt/smart-construction
-app_repository: https://github.com/puko02/smart-construction-DedSec.git
-app_repository_version: main
+app_repository: "{{ repo_url | default('https://github.com/puko02/smart-construction-DedSec.git') }}"
+app_repository_version: "{{ repo_version | default('main') }}"
 db_compose_file: compose.db.yaml
 db_private_ip: 10.20.0.11
 data_disk_device: /dev/disk/by-id/google-smart-db-data

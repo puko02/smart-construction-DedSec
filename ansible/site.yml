@@ -34,9 +34,18 @@
         - update_operating_system | bool
         - reboot_required.stat.exists
 
+    - name: Normalizar lista de pacotes adicionais
+      ansible.builtin.set_fact:
+        normalized_extra_packages: >-
+          {{
+            (extra_packages.split(',') | map('trim') | reject('equalto', '') | list)
+            if (extra_packages is string)
+            else (extra_packages | default([]))
+          }}
+
     - name: Instalar Docker, Compose e utilitários
       ansible.builtin.apt:
-        name: "{{ base_packages + docker_packages + extra_packages + host_packages }}"
+        name: "{{ base_packages + docker_packages + normalized_extra_packages + host_packages }}"
         state: present
         update_cache: true
         cache_valid_time: 3600
@@ -169,22 +178,24 @@
         cmd: sh scripts/setup.sh
         chdir: "{{ app_directory }}"
       when: not production_secrets.stat.exists
+      changed_when: true
       no_log: true
 
-    - name: Validar domínio HTTPS e tag já publicada
+    - name: Validar domínio HTTPS, modo TLS e tag da imagem
       ansible.builtin.assert:
         that:
           - app_public_origin is defined
           - app_public_origin is match('^https://[^/]+$')
           - app_domain is defined
           - app_domain != 'SEU_DOMINIO'
-          - letsencrypt_email is defined
-          - letsencrypt_email != 'SEU_EMAIL'
+          - tls_mode in ['letsencrypt', 'cloudflare_origin', 'self_signed']
+          - tls_mode != 'letsencrypt' or (letsencrypt_email is defined and letsencrypt_email != 'SEU_EMAIL')
+          - tls_mode != 'cloudflare_origin' or ((tls_cert_pem | length > 0) and (tls_key_pem | length > 0))
           - app_image_tag is defined
           - app_image_tag | length > 0
         fail_msg: >-
-          Defina app_domain, letsencrypt_email e app_image_tag (já publicada no
-          Artifact Registry) em group_vars/app_servers.yml.
+          Defina app_domain, app_image_tag e os parâmetros compatíveis com tls_mode
+          (letsencrypt_email para letsencrypt; tls_cert_pem e tls_key_pem para cloudflare_origin).
 
     - name: Criar raiz do desafio ACME
       ansible.builtin.file:
@@ -194,15 +205,73 @@
         group: www-data
         mode: "0755"
 
+    - name: Criar diretório de certificado SSL dedicado
+      ansible.builtin.file:
+        path: /etc/ssl/smart-construction
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      when: tls_mode in ['cloudflare_origin', 'self_signed']
+
+    - name: Instalar certificado Origin da Cloudflare
+      ansible.builtin.copy:
+        content: "{{ tls_cert_pem }}"
+        dest: "{{ ssl_certificate_path }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: tls_mode == 'cloudflare_origin'
+      no_log: true
+
+    - name: Instalar chave privada Origin da Cloudflare
+      ansible.builtin.copy:
+        content: "{{ tls_key_pem }}"
+        dest: "{{ ssl_certificate_key_path }}"
+        owner: root
+        group: root
+        mode: "0600"
+      when: tls_mode == 'cloudflare_origin'
+      no_log: true
+
+    - name: Verificar certificado autoassinado existente (modo contingência)
+      ansible.builtin.stat:
+        path: "{{ ssl_certificate_path }}"
+      register: self_signed_cert
+      when: tls_mode == 'self_signed'
+
+    - name: Gerar certificado TLS autoassinado para validação pré-DNS
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - req
+          - -x509
+          - -nodes
+          - -days
+          - "30"
+          - -newkey
+          - rsa:2048
+          - -keyout
+          - "{{ ssl_certificate_key_path }}"
+          - -out
+          - "{{ ssl_certificate_path }}"
+          - -subj
+          - "/CN={{ app_domain }}"
+      when:
+        - tls_mode == 'self_signed'
+        - not (self_signed_cert.stat.exists | default(false))
+      changed_when: true
+
     - name: Desativar site Nginx padrão
       ansible.builtin.file:
         path: /etc/nginx/sites-enabled/default
         state: absent
 
-    - name: Verificar certificado HTTPS existente
+    - name: Verificar certificado Let's Encrypt existente
       ansible.builtin.stat:
         path: "/etc/letsencrypt/live/{{ app_domain }}/fullchain.pem"
       register: tls_certificate
+      when: tls_mode == 'letsencrypt'
 
     - name: Configurar Nginx temporário para o desafio ACME inicial
       ansible.builtin.template:
@@ -211,7 +280,9 @@
         owner: root
         group: root
         mode: "0644"
-      when: not tls_certificate.stat.exists
+      when:
+        - tls_mode == 'letsencrypt'
+        - not (tls_certificate.stat.exists | default(false))
 
     - name: Habilitar o site Nginx do Smart Construction
       ansible.builtin.file:
@@ -225,13 +296,16 @@
       ansible.builtin.command:
         cmd: nginx -t
       changed_when: false
-      when: not tls_certificate.stat.exists
+      when:
+        - tls_mode == 'letsencrypt'
+        - not (tls_certificate.stat.exists | default(false))
 
     - name: Iniciar Nginx do host para receber o desafio ACME
       ansible.builtin.service:
         name: nginx
         state: started
         enabled: true
+      when: tls_mode == 'letsencrypt'
 
     - name: Emitir certificado TLS para o domínio
       ansible.builtin.command:
@@ -248,7 +322,10 @@
           - --agree-tos
           - --non-interactive
           - --keep-until-expiring
-      when: not tls_certificate.stat.exists
+      when:
+        - tls_mode == 'letsencrypt'
+        - not (tls_certificate.stat.exists | default(false))
+      changed_when: true
       no_log: true
 
     - name: Criar diretório de hooks de renovação do Certbot
@@ -258,6 +335,7 @@
         owner: root
         group: root
         mode: "0755"
+      when: tls_mode == 'letsencrypt'
 
     - name: Recarregar Nginx quando Certbot renovar o certificado
       ansible.builtin.copy:
@@ -266,6 +344,7 @@
         owner: root
         group: root
         mode: "0750"
+      when: tls_mode == 'letsencrypt'
 
     - name: Configurar Nginx HTTPS para a aplicação
       ansible.builtin.template:
@@ -274,6 +353,7 @@
         owner: root
         group: root
         mode: "0644"
+      notify: Recarregar Nginx
 
     - name: Validar configuração final do Nginx
       ansible.builtin.command:
@@ -285,11 +365,12 @@
         name: certbot.timer
         state: started
         enabled: true
+      when: tls_mode == 'letsencrypt'
 
-    - name: Recarregar Nginx com HTTPS
+    - name: Garantir Nginx iniciado e habilitado
       ansible.builtin.service:
         name: nginx
-        state: reloaded
+        state: started
         enabled: true
 
     - name: Criar ambiente de produção do Compose
@@ -299,6 +380,12 @@
         owner: root
         group: root
         mode: "0600"
+
+  handlers:
+    - name: Recarregar Nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded
 
 - name: Preparar e iniciar PostgreSQL na VM exclusiva
   hosts: db_servers
@@ -438,3 +525,40 @@
         pull: "{{ 'always' if update_application_images | bool else 'missing' }}"
         wait: true
         wait_timeout: 300
+
+    - name: Verificar serviços da aplicação em execução
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - -f
+          - "{{ app_compose_file }}"
+          - ps
+          - --status
+          - running
+          - --services
+        chdir: "{{ app_directory }}"
+      register: running_app_services
+      changed_when: false
+
+    - name: Confirmar que web, api, gateway e storages estão ativos
+      ansible.builtin.assert:
+        that:
+          - "'web' in running_app_services.stdout_lines"
+          - "'api' in running_app_services.stdout_lines"
+          - "'gateway' in running_app_services.stdout_lines"
+          - "'storage' in running_app_services.stdout_lines"
+          - "'private-storage' in running_app_services.stdout_lines"
+        fail_msg: "Nem todos os serviços obrigatórios estão rodando: {{ running_app_services.stdout }}"
+
+    - name: Verificar resposta HTTPS local pelo Nginx
+      ansible.builtin.uri:
+        url: "https://127.0.0.1/healthz"
+        headers:
+          Host: "{{ app_domain }}"
+        validate_certs: false
+        status_code: 200
+      register: https_health
+      retries: 5
+      delay: 3
+      until: https_health.status == 200

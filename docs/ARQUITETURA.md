@@ -26,3 +26,7 @@ O [escopo](escopo.md#31-conexões-em-operação) inclui o mapa completo com port
 O Compose local usa uma rede Docker e três volumes exclusivos do projeto. O requisito de duas VMs não está implementado pelo Compose: os alunos precisam separar o banco, restringir a porta à origem privada da API e definir onde armazenar as imagens.
 
 A esteira de CI verifica o código, constrói os containers e executa testes no runner descartável. Ela não tem credenciais de nuvem e não publica. Os pipelines de provisionamento, atualização, backup/restauração e encerramento compõem a entrega dos alunos.
+
+## Arquitetura de implantação em nuvem (entrega)
+
+A proposta de nuvem GCP, justificativas técnicas, estimativa mensal de custos, estratégia de backup/restauração e encerramento estão documentadas em [ARQUITETURA_NUVEM.md](ARQUITETURA_NUVEM.md).

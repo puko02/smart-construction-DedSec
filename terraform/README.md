@@ -60,6 +60,6 @@ Os outputs mostram os IPs e a URL do registry. Aponte o DNS A do domínio para `
 
 ## Persistência e encerramento
 
-Os discos de dados são separados dos discos de boot e possuem `prevent_destroy`; isso evita apagar dados acidentalmente, mas também impede um `terraform destroy` completo enquanto essa proteção estiver no código. Para encerrar o laboratório, faça e valide backup, remova a proteção de cada disco conscientemente, revise `terraform plan -destroy` e só então destrua. Discos mantidos após apagar as VMs continuam gerando cobrança.
+Os discos de dados são separados dos discos de boot, portanto alterações de `machine_type` ou atualizações de sistema não recriam os volumes de dados. Para encerrar o laboratório pela pipeline (`action=destroy` com confirmação `DESTROY`) ou manualmente via `terraform destroy`, faça e valide backup antes. Discos ou imagens mantidos após apagar as VMs continuam gerando cobrança.
 
 Os discos estão apenas anexados nesta etapa. O próximo passo do Ansible deve formatá-los somente se estiverem vazios, montá-los em caminhos estáveis e configurar PostgreSQL/Docker para usar esses caminhos sem apagar dados existentes.

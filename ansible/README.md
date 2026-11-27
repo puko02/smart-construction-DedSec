@@ -6,11 +6,19 @@ O disco persistente é inspecionado antes de qualquer formatação: o playbook s
 
 ## Antes da primeira implantação
 
-1. Aplique o Terraform e aguarde a criação das VMs e a concessão de IAP. O Terraform cria o usuário SSH, habilita IAP e permite o túnel para o e-mail definido em `terraform/terraform.tfvars`.
-2. Na máquina de controle WSL, autentique o `gcloud` (`gcloud auth login`) e confirme `gcloud config set project projeto-mensal-515620`.
+1. Aplique o Terraform (ou execute a pipeline `.github/workflows/deploy.yml` com `action=deploy`) e aguarde a criação das VMs e a concessão de IAP.
+2. Na máquina de controle Linux/WSL (quando rodar manualmente), autentique o `gcloud` (`gcloud auth login`) e confirme `gcloud config set project projeto-mensal-515620`.
 3. Instale as collections: `ansible-galaxy collection install -r ansible/requirements.yml`.
-4. Configure `app_domain` e `letsencrypt_email` em `group_vars/app_servers.yml`. Aponte o registro DNS A do domínio para o output `app_public_ip` do Terraform e aguarde o DNS resolver antes do primeiro Ansible.
-5. Publique as imagens `web` e `api` no Artifact Registry antes do Ansible; o servidor não compila código da aplicação.
+4. Configure `app_domain` e o modo TLS (`tls_mode`):
+   - **`cloudflare_origin` (recomendado com Cloudflare proxy):** informe `tls_cert_pem` e `tls_key_pem` (via GitHub Secrets `CLOUDFLARE_ORIGIN_CERT` e `CLOUDFLARE_ORIGIN_KEY`).
+   - **`letsencrypt`:** informe `letsencrypt_email` e aponte o registro DNS A (sem proxy bloqueando o desafio HTTP) para o `app_public_ip`.
+   - **`self_signed`:** gera certificado local temporário apenas para testes pré-DNS.
+5. Publique as imagens `web` e `api` no Artifact Registry antes do Ansible (a pipeline `deploy.yml` já faz isso automaticamente quando `build_and_push_images=true`).
+
+## Backup e restauração isolada
+
+- Gerar backup consistente (`pg_dump` + volumes SeaweedFS + `.secrets`): `ansible-playbook -i ansible/inventory/hosts.yml ansible/backup.yml`
+- Validar restauração em contêiner/diretório isolado sem sobrescrever a produção: `ansible-playbook -i ansible/inventory/hosts.yml ansible/restore-test.yml`
 
 ## Publicar imagens para uma implantação manual
 

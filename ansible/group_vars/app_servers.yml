@@ -1,21 +1,38 @@
+---
 app_directory: /opt/smart-construction
-app_repository: https://github.com/puko02/smart-construction-DedSec.git
-app_repository_version: main
+app_repository: "{{ repo_url | default('https://github.com/puko02/smart-construction-DedSec.git') }}"
+app_repository_version: "{{ repo_version | default('main') }}"
 
 # Imagens já publicadas no Artifact Registry; o servidor nunca compila a aplicação.
 app_compose_file: compose.app.yaml
 app_private_ip: 10.20.0.10
 db_private_ip: 10.20.0.11
-app_registry: us-central1-docker.pkg.dev/projeto-mensal-515620/smart-construction
-artifact_registry_host: us-central1-docker.pkg.dev
+app_registry: "{{ gcp_region }}-docker.pkg.dev/{{ gcp_project_id }}/smart-construction"
+artifact_registry_host: "{{ gcp_region }}-docker.pkg.dev"
 app_image_tag: latest
 app_domain: SEU_DOMINIO
 app_public_origin: "https://{{ app_domain }}"
+tls_mode: letsencrypt
 letsencrypt_email: SEU_EMAIL
+tls_cert_pem: ""
+tls_key_pem: ""
+ssl_certificate_path: >-
+  {{
+    '/etc/letsencrypt/live/' ~ app_domain ~ '/fullchain.pem'
+    if tls_mode == 'letsencrypt'
+    else '/etc/ssl/smart-construction/fullchain.pem'
+  }}
+ssl_certificate_key_path: >-
+  {{
+    '/etc/letsencrypt/live/' ~ app_domain ~ '/privkey.pem'
+    if tls_mode == 'letsencrypt'
+    else '/etc/ssl/smart-construction/privkey.pem'
+  }}
 host_packages:
   - nginx
   - certbot
   - python3-certbot-nginx
+  - openssl
 update_operating_system: false
 update_application_images: false
 update_database_image: false
