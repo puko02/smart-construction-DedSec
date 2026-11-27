@@ -400,7 +400,8 @@ jobs:
             echo "DNS resolve para: $(getent hosts "${APP_DOMAIN}" | awk '{print $1}')"
           else
             echo "::warning::DNS de ${APP_DOMAIN} ainda nao propagou (nao bloqueia o deploy). Confira o registro A no Registro.br."
-          fi          echo ""
+          fi
+          echo ""
           if nc -z -w 3 "${APP_PUBLIC_IP}" 5432 2>/dev/null; then
             echo "::error::Porta 5432 está acessível publicamente!"
             exit 1
