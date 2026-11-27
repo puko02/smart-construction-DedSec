@@ -235,7 +235,7 @@ jobs:
       - name: Build & Push web e api
         shell: bash
         env:
-          REGISTRY: ${{ needs.terraform.outputs.artifact_registry_repository }}
+          REGISTRY: ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/smart-construction
           IMAGE_TAG: ${{ needs.terraform.outputs.effective_tag }}
         run: |
           set -euo pipefail
