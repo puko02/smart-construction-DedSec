@@ -289,6 +289,7 @@
         src: /etc/nginx/sites-available/smart-construction
         dest: /etc/nginx/sites-enabled/smart-construction
         state: link
+        force: true  # o template HTTPS e gravado depois nos modos self_signed/cloudflare_origin
         owner: root
         group: root
 
